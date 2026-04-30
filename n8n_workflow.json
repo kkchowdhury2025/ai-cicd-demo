@@ -1,0 +1,202 @@
+{
+  "name": "AI CI/CD Gate — Jenkins + n8n",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "jenkins-ai-gate",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Receive from Jenkins",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "jenkins-ai-gate-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst body = item.body || item;\nconst changedFiles = body.changed_files || '';\nconst diff = (body.diff || '').substring(0, 12000);\nreturn [{\n  json: {\n    pr_author: body.pr_author || 'unknown',\n    pr_title: body.pr_title || 'no title',\n    changed_files_list: changedFiles,\n    diff_summary: diff,\n    repo_full_name: body.repo || '',\n    pr_number: body.pr_number || 0,\n    head_sha: body.head_sha || '',\n    pr_html_url: body.pr_html_url || body.build_url || ''\n  }\n}];"
+      },
+      "id": "node-prepare-diff",
+      "name": "Prepare diff for AI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $credentials.httpHeaderAuth.value }}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "content-type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 1024,\n  \"system\": \"You are a senior code reviewer and security auditor. Analyse the git diff and respond ONLY with valid JSON — no extra text, no markdown fences.\\n\\nReturn exactly this JSON structure:\\n{\\n  \\\"passed\\\": true,\\n  \\\"risk_level\\\": \\\"low\\\",\\n  \\\"issues\\\": [{\\\"severity\\\": \\\"critical|high|medium|low\\\", \\\"title\\\": \\\"short title\\\", \\\"detail\\\": \\\"explanation\\\", \\\"file\\\": \\\"filename\\\"}],\\n  \\\"summary\\\": \\\"one sentence summary\\\"\\n}\\n\\nBLOCK (passed: false) if ANY of these:\\n- Hardcoded secrets, API keys, tokens, passwords\\n- Auth or security middleware removed from protected routes\\n- SQL injection vulnerabilities\\n- Passwords or tokens logged to console\\n- Private keys committed\\n\\nPASS with warnings (passed: true) for: missing error handling, TODOs, style issues.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"PR by {{ $json.pr_author }}\\nTitle: {{ $json.pr_title }}\\n\\nChanged files:\\n{{ $json.changed_files_list }}\\n\\nDiff:\\n{{ $json.diff_summary }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "node-ai-review",
+      "name": "Claude AI — review diff",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [680, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "anthropic-credential",
+          "name": "Anthropic API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nlet aiText = '';\ntry { aiText = item.content[0].text; } catch(e) { aiText = '{\"passed\":false,\"risk_level\":\"unknown\",\"issues\":[{\"severity\":\"high\",\"title\":\"AI error\",\"detail\":\"Could not get AI response\",\"file\":\"unknown\"}],\"summary\":\"AI response error\"}'; }\naiText = aiText.replace(/```json\\s*/g,'').replace(/```\\s*/g,'').trim();\nlet result;\ntry { result = JSON.parse(aiText); } catch(e) { result = { passed: false, risk_level: 'unknown', issues: [{severity:'high', title:'Parse error', detail: aiText.substring(0,200), file:'unknown'}], summary: 'AI response parse error' }; }\nconst prData = $('Prepare diff for AI').first().json;\nconst passed = result.passed === true;\nconst today = new Date().toISOString().split('T')[0];\nconst issueLines = (result.issues || []).map(i => `- **[${(i.severity||'info').toUpperCase()}]** ${i.title} — \\`${i.file}\\`\\n  ${i.detail}`).join('\\n');\nconst passComment = `## AI Gate — PASSED :white_check_mark:\\n\\n> Risk level: **${result.risk_level||'low'}**\\n\\n${result.summary}\\n\\n${issueLines ? '### Notes\\n'+issueLines : '_No issues found. Clean diff._'}\\n\\n---\\n_Reviewed by AI gate (Jenkins + n8n + Claude) • ${today}_`;\nconst failComment = `## AI Gate — BLOCKED :no_entry:\\n\\n> Risk level: **${result.risk_level||'high'}**\\n\\n${result.summary}\\n\\n### Issues found\\n${issueLines}\\n\\n---\\n**This build has been blocked by the AI gate.**\\nFix the issues above and push a new commit to re-trigger.\\n\\n_Reviewed by AI gate (Jenkins + n8n + Claude) • ${today}_`;\nreturn [{ json: { pr_number: prData.pr_number, repo_full_name: prData.repo_full_name, pr_author: prData.pr_author, pr_title: prData.pr_title, head_sha: prData.head_sha, pr_html_url: prData.pr_html_url, passed: passed, risk_level: result.risk_level || 'unknown', summary: result.summary || '', issues: result.issues || [], comment_body: passed ? passComment : failComment } }];"
+      },
+      "id": "node-parse-result",
+      "name": "Parse AI result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{ "id": "check-passed", "leftValue": "={{ $json.passed }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+          "combinator": "and"
+        }
+      },
+      "id": "node-if-passed",
+      "name": "Did AI gate pass?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/{{ $json.repo_full_name }}/issues/{{ $json.pr_number }}/comments",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Accept", "value": "application/vnd.github.v3+json" }, { "name": "X-GitHub-Api-Version", "value": "2022-11-28" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"body\": {{ JSON.stringify($json.comment_body) }} }",
+        "options": {}
+      },
+      "id": "node-post-pass-comment",
+      "name": "Post PASS comment on PR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1340, 160],
+      "credentials": { "httpHeaderAuth": { "id": "github-token-credential", "name": "GitHub Token" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/{{ $json.repo_full_name }}/issues/{{ $json.pr_number }}/comments",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Accept", "value": "application/vnd.github.v3+json" }, { "name": "X-GitHub-Api-Version", "value": "2022-11-28" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"body\": {{ JSON.stringify($json.comment_body) }} }",
+        "options": {}
+      },
+      "id": "node-post-fail-comment",
+      "name": "Post BLOCK comment on PR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1340, 440],
+      "credentials": { "httpHeaderAuth": { "id": "github-token-credential", "name": "GitHub Token" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/{{ $json.repo_full_name }}/statuses/{{ $json.head_sha }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Accept", "value": "application/vnd.github.v3+json" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"state\": \"success\",\n  \"description\": \"AI gate passed — risk: {{ $json.risk_level }}\",\n  \"context\": \"ai-cicd-gate\",\n  \"target_url\": \"{{ $json.pr_html_url }}\"\n}",
+        "options": {}
+      },
+      "id": "node-set-pass-status",
+      "name": "Set commit status — success",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1560, 160],
+      "credentials": { "httpHeaderAuth": { "id": "github-token-credential", "name": "GitHub Token" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.github.com/repos/{{ $json.repo_full_name }}/statuses/{{ $json.head_sha }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Accept", "value": "application/vnd.github.v3+json" }] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"state\": \"failure\",\n  \"description\": \"AI gate blocked — risk: {{ $json.risk_level }}\",\n  \"context\": \"ai-cicd-gate\",\n  \"target_url\": \"{{ $json.pr_html_url }}\"\n}",
+        "options": {}
+      },
+      "id": "node-set-fail-status",
+      "name": "Set commit status — failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1560, 440],
+      "credentials": { "httpHeaderAuth": { "id": "github-token-credential", "name": "GitHub Token" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"passed\": {{ $('Parse AI result').item.json.passed }},\n  \"risk_level\": \"{{ $('Parse AI result').item.json.risk_level }}\",\n  \"summary\": {{ JSON.stringify($('Parse AI result').item.json.summary) }},\n  \"issues\": {{ JSON.stringify($('Parse AI result').item.json.issues) }}\n}",
+        "options": { "responseHeaders": { "entries": [{ "name": "Content-Type", "value": "application/json" }] } }
+      },
+      "id": "node-respond-pass",
+      "name": "Respond to Jenkins — PASS",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1780, 160]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"passed\": {{ $('Parse AI result').item.json.passed }},\n  \"risk_level\": \"{{ $('Parse AI result').item.json.risk_level }}\",\n  \"summary\": {{ JSON.stringify($('Parse AI result').item.json.summary) }},\n  \"issues\": {{ JSON.stringify($('Parse AI result').item.json.issues) }}\n}",
+        "options": { "responseCode": 200, "responseHeaders": { "entries": [{ "name": "Content-Type", "value": "application/json" }] } }
+      },
+      "id": "node-respond-fail",
+      "name": "Respond to Jenkins — BLOCK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1780, 440]
+    }
+  ],
+  "connections": {
+    "Receive from Jenkins":  { "main": [[{ "node": "Prepare diff for AI",         "type": "main", "index": 0 }]] },
+    "Prepare diff for AI":   { "main": [[{ "node": "Claude AI — review diff",      "type": "main", "index": 0 }]] },
+    "Claude AI — review diff": { "main": [[{ "node": "Parse AI result",            "type": "main", "index": 0 }]] },
+    "Parse AI result":       { "main": [[{ "node": "Did AI gate pass?",            "type": "main", "index": 0 }]] },
+    "Did AI gate pass?":     { "main": [[{ "node": "Post PASS comment on PR",      "type": "main", "index": 0 }], [{ "node": "Post BLOCK comment on PR", "type": "main", "index": 0 }]] },
+    "Post PASS comment on PR":  { "main": [[{ "node": "Set commit status — success","type": "main", "index": 0 }]] },
+    "Post BLOCK comment on PR": { "main": [[{ "node": "Set commit status — failure","type": "main", "index": 0 }]] },
+    "Set commit status — success": { "main": [[{ "node": "Respond to Jenkins — PASS",  "type": "main", "index": 0 }]] },
+    "Set commit status — failure": { "main": [[{ "node": "Respond to Jenkins — BLOCK", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "staticData": null,
+  "meta": { "templateCredsSetupCompleted": false },
+  "pinData": {},
+  "tags": [{ "id": "tag-cicd", "name": "CI/CD" }, { "id": "tag-ai", "name": "AI Gate" }]
+}
