@@ -2,7 +2,8 @@ pipeline {
   agent any
 
   environment {
-    N8N_WEBHOOK_URL = credentials('N8N_WEBHOOK_URL')
+    // N8N_WEBHOOK_URL = credentials('N8N_WEBHOOK_URL')
+    N8N_WEBHOOK_URL = 'https://kkc2026.app.n8n.cloud/webhook-test/jenkins-ai-gate'
   }
 
   stages {
