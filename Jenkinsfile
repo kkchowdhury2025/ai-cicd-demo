@@ -42,6 +42,8 @@ pipeline {
     stage('AI gate — via n8n') {
       steps {
         script {
+          // Safely parse the PR ID, defaulting to 0 if this isn't a PR build
+          def prId = env.CHANGE_ID ? env.CHANGE_ID.toInteger() : 0
 
           writeFile file: 'n8n_payload.json', text: groovy.json.JsonOutput.toJson([
             pr_author    : env.PR_AUTHOR     ?: 'unknown',
@@ -49,9 +51,9 @@ pipeline {
             changed_files: env.CHANGED_FILES ?: '',
             diff         : (env.DIFF_CONTENT ?: '').take(12000),
             repo         : 'kkchowdhury2025/ai-cicd-demo',
-            pr_number    : 0,
+            pr_number    : prId,
             head_sha     : env.HEAD_SHA      ?: '',
-            pr_html_url  : env.BUILD_URL     ?: '',
+            pr_html_url  : env.CHANGE_URL    ?: env.BUILD_URL,
             build_url    : env.BUILD_URL     ?: ''
           ])
 
