@@ -2,8 +2,7 @@ pipeline {
   agent any
 
   environment {
-    // N8N_WEBHOOK_URL = credentials('N8N_WEBHOOK_URL')
-    N8N_WEBHOOK_URL = 'https://kkc2026.app.n8n.cloud/webhook-test/jenkins-ai-gate'
+    N8N_WEBHOOK_URL = credentials('N8N_WEBHOOK_URL')
   }
 
   stages {
@@ -29,7 +28,7 @@ pipeline {
           ).trim()
 
           env.DIFF_CONTENT = sh(
-            script: "git diff HEAD~1 -- . ':(exclude)package-lock.json' ':(exclude)yarn.lock' 2>/dev/null || echo ''",
+            script: "git diff HEAD~1 -- . ':(exclude)package-lock.json' ':(exclude)yarn.lock' ':(exclude)Jenkinsfile' 2>/dev/null || echo ''",
             returnStdout: true
           ).trim()
 
@@ -49,7 +48,7 @@ pipeline {
             changed_files: env.CHANGED_FILES ?: '',
             diff         : (env.DIFF_CONTENT ?: '').take(12000),
             repo         : 'kkchowdhury2025/ai-cicd-demo',
-            pr_number    : 2,
+            pr_number    : 0,
             head_sha     : env.HEAD_SHA      ?: '',
             pr_html_url  : env.BUILD_URL     ?: '',
             build_url    : env.BUILD_URL     ?: ''
@@ -58,14 +57,14 @@ pipeline {
           def webhookUrl = env.N8N_WEBHOOK_URL
 
           def response = sh(
-            script: """curl -s -X POST '${webhookUrl}' -H 'Content-Type: application/json' --max-time 60 -d @n8n_payload.json""",
+            script: "curl -s -X POST '${webhookUrl}' -H 'Content-Type: application/json' --max-time 60 -d @n8n_payload.json",
             returnStdout: true
           ).trim()
 
           echo "=== n8n AI Gate Response ==="
           echo response
 
-          def passed = response.contains('"passed":true')
+          def passed  = response.contains('"passed":true')
           def blocked = response.contains('"passed":false')
 
           if (blocked) {
