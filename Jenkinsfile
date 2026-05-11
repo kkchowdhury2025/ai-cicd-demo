@@ -45,7 +45,7 @@ pipeline {
             changed_files: env.CHANGED_FILES ?: '',
             diff         : (env.DIFF_CONTENT ?: '').take(12000),
             repo         : 'kkchowdhury2025/ai-cicd-demo',
-            pr_number    : 2,
+            pr_number    : 1,
             head_sha     : env.HEAD_SHA      ?: '',
             pr_html_url  : env.BUILD_URL     ?: '',
             build_url    : env.BUILD_URL     ?: ''
